@@ -67,6 +67,22 @@ class OpenRouterNode:
                 }),
                  "pdf_engine": (["auto", "mistral-ocr", "pdf-text"], {"default": "auto"}),
                 "chat_mode": ("BOOLEAN", {"default": False}),
+                "max_tokens": ("INT", {
+                    "default": 0,
+                    "min": 0,
+                    "max": 1000000,
+                    "step": 256,
+                    "display": "number",
+                    "tooltip": "Maximum tokens to generate. Set to 0 for model default (unlimited)."
+                }),
+                "timeout": ("INT", {
+                    "default": 60,
+                    "min": 1,
+                    "max": 600,
+                    "step": 1,
+                    "display": "number",
+                    "tooltip": "Request timeout in seconds."
+                }),
             },
             "optional": {
                 "pdf_data": (PDF_DATA_TYPE,), # Use '*' and check structure in generate_response
@@ -156,6 +172,7 @@ class OpenRouterNode:
 
     def generate_response(self, api_key, system_prompt, user_message_box, model,
                          web_search, cheapest, fastest, temperature, pdf_engine, chat_mode,
+                         max_tokens=0, timeout=60,
                          image_generation=False, pdf_data=None, user_message_input=None, **kwargs):
         """
         Sends a completion request to the OpenRouter chat completion endpoint.
@@ -309,6 +326,10 @@ class OpenRouterNode:
             "temperature": validated_temp
             # Omitting max_tokens lets the model decide (usually preferred)
         }
+
+        # Apply max_tokens if explicitly set (non-zero)
+        if max_tokens > 0:
+            data["max_tokens"] = int(max_tokens)
         
         # Only add modalities parameter if explicitly requested by user
         # This prevents "Multi-modal output is not supported" errors on text-only models
@@ -340,7 +361,7 @@ class OpenRouterNode:
         # --- Make API Call and Process Response ---
         try:
             start_time = time.time()
-            response = requests.post(url, headers=headers, json=data)
+            response = requests.post(url, headers=headers, json=data, timeout=timeout)
             response.raise_for_status() # Raises HTTPError for bad responses (4xx or 5xx)
             end_time = time.time()
 
@@ -429,6 +450,8 @@ class OpenRouterNode:
                 f"Temp: {validated_temp:.1f}, "
                 f"Model: {modified_model}" # Display the actual model used
             )
+            if max_tokens > 0:
+                stats_text += f", Max Tokens: {max_tokens}"
             if pdf_engine != "auto":
                  stats_text += f", PDF Engine: {pdf_engine}"
 
@@ -450,6 +473,8 @@ class OpenRouterNode:
 
             return (text_output, image_tensor, stats_text, credits_text)
 
+        except requests.exceptions.Timeout:
+            return (f"API Request Error: Request timed out after {timeout} seconds.", placeholder_image, "Stats N/A due to error", "Credits N/A due to error")
         except requests.exceptions.RequestException as e:
             error_message = f"API Request Error: {str(e)}"
             if hasattr(e, 'response') and e.response is not None:
@@ -574,6 +599,7 @@ class OpenRouterNode:
     @classmethod
     def IS_CHANGED(cls, api_key, system_prompt, user_message_box, model,
                    web_search, cheapest, fastest, temperature, pdf_engine, chat_mode,
+                   max_tokens=0, timeout=60,
                    image_generation=False, pdf_data=None, user_message_input=None, **kwargs):
         """
         Check if any input that affects the output has changed.
@@ -628,6 +654,7 @@ class OpenRouterNode:
         # Use primitive types where possible for reliable hashing/comparison
         return (api_key, system_prompt, user_message_box, model,
                 web_search, cheapest, fastest, temp_float, pdf_engine, chat_mode,
+                max_tokens, timeout,
                 image_generation, tuple(image_hashes), pdf_hash, user_message_input)
 
 # Node class mappings
