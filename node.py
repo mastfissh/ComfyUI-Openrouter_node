@@ -105,13 +105,17 @@ class OpenRouterNode:
         if (cls.models_cache is None) or (current_time - cls.last_fetch_time > cls.cache_duration):
             url = "https://openrouter.ai/api/v1/models"
             try:
-                response = requests.get(url)
+                response = requests.get(url, timeout=10)
                 response.raise_for_status()
                 models = response.json()["data"]
                 # Filter for models that support chat completions if needed, but API handles this
                 model_list = sorted([model['id'] for model in models])
                 cls.models_cache = model_list
                 cls.last_fetch_time = current_time
+            except requests.exceptions.Timeout:
+                print("Error fetching models: Request timed out.")
+                if cls.models_cache is None:
+                    cls.models_cache = ["error_fetching_models", "google/gemma-3-27b-it", "openai/gpt-4o"]
             except requests.exceptions.RequestException as e:
                 print(f"Error fetching models: {e}")
                 # Provide a default list or indicate error if cache is empty
@@ -146,7 +150,7 @@ class OpenRouterNode:
         }
 
         try:
-            response = requests.get(url, headers=headers)
+            response = requests.get(url, headers=headers, timeout=10)
             response.raise_for_status()
 
             result = response.json()
@@ -161,6 +165,8 @@ class OpenRouterNode:
 
             return credits_text
 
+        except requests.exceptions.Timeout:
+            return "Error fetching credits: Request timed out."
         except requests.exceptions.RequestException as e:
             # Provide more context about the error
             error_message = f"Error fetching credits: {str(e)}"
