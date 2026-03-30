@@ -91,7 +91,7 @@ class OpenRouterNode:
                     "default": 0,
                     "min": 0,
                     "max": 128000,
-                    "step": 1024,
+                    "step": 64,
                     "display": "number",
                     "tooltip": "Maximum thinking tokens for reasoning models. Set to 0 to let the model decide."
                 }),
