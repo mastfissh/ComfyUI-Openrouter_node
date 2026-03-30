@@ -83,9 +83,9 @@ class OpenRouterNode:
                     "display": "number",
                     "tooltip": "Request timeout in seconds."
                 }),
-                "reasoning_effort": (["default", "none", "low", "medium", "high"], {
+                "reasoning_effort": (["default", "none", "minimal", "low", "medium", "high"], {
                     "default": "default",
-                    "tooltip": "Reasoning effort level for models that support extended thinking. 'default' omits the parameter, 'none' disables reasoning, 'low/medium/high' sets the effort level."
+                    "tooltip": "Reasoning effort level. 'default' omits the parameter (model decides), 'none' disables reasoning, 'minimal/low/medium/high' explicitly enables reasoning at that effort level."
                 }),
             },
             "optional": {
@@ -343,10 +343,13 @@ class OpenRouterNode:
 
         # Apply reasoning effort if explicitly set
         if reasoning_effort == "none":
-            data["reasoning"] = {"exclude": True}
-        elif reasoning_effort in ("low", "medium", "high"):
-            data["reasoning"] = {"effort": reasoning_effort}
+            data["reasoning"] = {"enabled": False}
+        elif reasoning_effort in ("minimal", "low", "medium", "high"):
+            data["reasoning"] = {"enabled": True, "effort": reasoning_effort}
         # "default" → omit the reasoning key entirely (model decides)
+        
+        if "reasoning" in data:
+            print(f"Reasoning payload: {data['reasoning']}")
         
         # Only add modalities parameter if explicitly requested by user
         # This prevents "Multi-modal output is not supported" errors on text-only models
