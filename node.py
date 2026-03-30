@@ -87,6 +87,14 @@ class OpenRouterNode:
                     "default": "default",
                     "tooltip": "Reasoning effort level. 'default' omits the parameter (model decides), 'none' disables reasoning, 'minimal/low/medium/high' explicitly enables reasoning at that effort level."
                 }),
+                "reasoning_max_tokens": ("INT", {
+                    "default": 0,
+                    "min": 0,
+                    "max": 128000,
+                    "step": 1024,
+                    "display": "number",
+                    "tooltip": "Maximum thinking tokens for reasoning models. Set to 0 to let the model decide."
+                }),
             },
             "optional": {
                 "pdf_data": (PDF_DATA_TYPE,), # Use '*' and check structure in generate_response
@@ -183,6 +191,7 @@ class OpenRouterNode:
     def generate_response(self, api_key, system_prompt, user_message_box, model,
                          web_search, cheapest, fastest, temperature, pdf_engine, chat_mode,
                          max_tokens=0, timeout=60, reasoning_effort="default",
+                         reasoning_max_tokens=0,
                          image_generation=False, pdf_data=None, user_message_input=None, **kwargs):
         """
         Sends a completion request to the OpenRouter chat completion endpoint.
@@ -348,6 +357,12 @@ class OpenRouterNode:
             data["reasoning"] = {"enabled": True, "effort": reasoning_effort}
         # "default" → omit the reasoning key entirely (model decides)
         
+        # Apply reasoning max_tokens if set (works with any reasoning_effort except "none")
+        if reasoning_max_tokens > 0 and reasoning_effort != "none":
+            if "reasoning" not in data:
+                data["reasoning"] = {"enabled": True}
+            data["reasoning"]["max_tokens"] = int(reasoning_max_tokens)
+        
         if "reasoning" in data:
             print(f"Reasoning payload: {data['reasoning']}")
         
@@ -474,6 +489,8 @@ class OpenRouterNode:
                 stats_text += f", Max Tokens: {max_tokens}"
             if reasoning_effort != "default":
                 stats_text += f", Reasoning: {reasoning_effort}"
+            if reasoning_max_tokens > 0:
+                stats_text += f", Thinking Tokens: {reasoning_max_tokens}"
             if pdf_engine != "auto":
                  stats_text += f", PDF Engine: {pdf_engine}"
 
@@ -622,6 +639,7 @@ class OpenRouterNode:
     def IS_CHANGED(cls, api_key, system_prompt, user_message_box, model,
                    web_search, cheapest, fastest, temperature, pdf_engine, chat_mode,
                    max_tokens=0, timeout=60, reasoning_effort="default",
+                   reasoning_max_tokens=0,
                    image_generation=False, pdf_data=None, user_message_input=None, **kwargs):
         """
         Check if any input that affects the output has changed.
@@ -676,7 +694,7 @@ class OpenRouterNode:
         # Use primitive types where possible for reliable hashing/comparison
         return (api_key, system_prompt, user_message_box, model,
                 web_search, cheapest, fastest, temp_float, pdf_engine, chat_mode,
-                max_tokens, timeout, reasoning_effort,
+                max_tokens, timeout, reasoning_effort, reasoning_max_tokens,
                 image_generation, tuple(image_hashes), pdf_hash, user_message_input)
 
 # Node class mappings
