@@ -390,11 +390,16 @@ class OpenRouterNode:
         # Apply reasoning settings.
         # OpenRouter only allows one of "effort" or "max_tokens", not both.
         # When reasoning_max_tokens > 0 it takes priority over reasoning_effort.
+        try:
+            _reasoning_max_tokens = int(reasoning_max_tokens)
+        except (ValueError, TypeError):
+            _reasoning_max_tokens = 0
+
         if reasoning_effort == "none":
             data["reasoning"] = {"enabled": False}
-        elif int(reasoning_max_tokens) > 0:
+        elif _reasoning_max_tokens > 0:
             # max_tokens takes priority – do NOT also send effort
-            data["reasoning"] = {"enabled": True, "max_tokens": int(reasoning_max_tokens)}
+            data["reasoning"] = {"enabled": True, "max_tokens": _reasoning_max_tokens}
         elif reasoning_effort in ("minimal", "low", "medium", "high"):
             data["reasoning"] = {"enabled": True, "effort": reasoning_effort}
         # "default" with max_tokens == 0 → omit the reasoning key entirely (model decides)
