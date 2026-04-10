@@ -29,20 +29,6 @@ class OpenRouterNode:
     last_fetch_time = 0
     cache_duration = 3600  # Cache duration in seconds (1 hour)
 
-    # Reasoning presets: map preset name -> (effort, max_tokens)
-    # effort=None means "default" (omit), max_tokens=0 means "no limit"
-    REASONING_PRESETS = {
-        "custom":     None,            # Use manual reasoning_effort & reasoning_max_tokens
-        "none":       ("none", 0),     # Disable reasoning
-        "low":        ("low", 0),      # Low effort, model decides token budget
-        "medium":     ("medium", 0),   # Medium effort
-        "high":       ("high", 0),     # High effort
-        "think_4k":   (None, 4096),    # 4 K thinking tokens
-        "think_16k":  (None, 16384),   # 16 K thinking tokens
-        "think_64k":  (None, 65536),   # 64 K thinking tokens
-        "think_128k": (None, 131072),  # 128 K thinking tokens
-    }
-
     def __init__(self):
         self.chat_manager = ChatSessionManager()
 
@@ -96,10 +82,6 @@ class OpenRouterNode:
                     "step": 1,
                     "display": "number",
                     "tooltip": "Request timeout in seconds."
-                }),
-                "reasoning_preset": (list(cls.REASONING_PRESETS.keys()), {
-                    "default": "custom",
-                    "tooltip": "Quick presets for reasoning. 'custom' uses the manual reasoning_effort and reasoning_max_tokens below. Effort presets (low/medium/high) set the effort level. Think presets (think_4k … think_128k) set a thinking-token budget instead."
                 }),
                 "reasoning_effort": (["default", "none", "minimal", "low", "medium", "high"], {
                     "default": "default",
@@ -208,8 +190,7 @@ class OpenRouterNode:
 
     def generate_response(self, api_key, system_prompt, user_message_box, model,
                          web_search, cheapest, fastest, temperature, pdf_engine, chat_mode,
-                         max_tokens=0, timeout=60, reasoning_preset="custom",
-                         reasoning_effort="default",
+                         max_tokens=0, timeout=60, reasoning_effort="default",
                          reasoning_max_tokens=0,
                          image_generation=False, pdf_data=None, user_message_input=None, **kwargs):
         """
@@ -369,27 +350,17 @@ class OpenRouterNode:
         if max_tokens > 0:
             data["max_tokens"] = int(max_tokens)
 
-        # --- Resolve reasoning settings (preset overrides manual fields) ---
-        if reasoning_preset != "custom" and reasoning_preset in self.REASONING_PRESETS:
-            preset = self.REASONING_PRESETS[reasoning_preset]
-            effective_effort = preset[0]       # None means "default" (omit)
-            effective_max_tokens = preset[1]
-        else:
-            # "custom" — use the manual controls
-            effective_effort = reasoning_effort if reasoning_effort != "default" else None
-            effective_max_tokens = reasoning_max_tokens
-
         # Apply reasoning settings.
         # OpenRouter only allows one of "effort" or "max_tokens", not both.
-        # When effective_max_tokens > 0 it takes priority over effective_effort.
-        if effective_effort == "none":
+        # When reasoning_max_tokens > 0 it takes priority over reasoning_effort.
+        if reasoning_effort == "none":
             data["reasoning"] = {"enabled": False}
-        elif effective_max_tokens > 0:
+        elif reasoning_max_tokens > 0:
             # max_tokens takes priority – do NOT also send effort
-            data["reasoning"] = {"enabled": True, "max_tokens": int(effective_max_tokens)}
-        elif effective_effort in ("minimal", "low", "medium", "high"):
-            data["reasoning"] = {"enabled": True, "effort": effective_effort}
-        # None (default) with max_tokens == 0 → omit the reasoning key entirely (model decides)
+            data["reasoning"] = {"enabled": True, "max_tokens": int(reasoning_max_tokens)}
+        elif reasoning_effort in ("minimal", "low", "medium", "high"):
+            data["reasoning"] = {"enabled": True, "effort": reasoning_effort}
+        # "default" with max_tokens == 0 → omit the reasoning key entirely (model decides)
         
         if "reasoning" in data:
             print(f"Reasoning payload: {data['reasoning']}")
@@ -515,12 +486,10 @@ class OpenRouterNode:
             )
             if max_tokens > 0:
                 stats_text += f", Max Tokens: {max_tokens}"
-            if reasoning_preset != "custom":
-                stats_text += f", Reasoning Preset: {reasoning_preset}"
-            elif reasoning_effort != "default":
+            if reasoning_effort != "default":
                 stats_text += f", Reasoning: {reasoning_effort}"
-            if effective_max_tokens > 0:
-                stats_text += f", Thinking Tokens: {effective_max_tokens}"
+            if reasoning_max_tokens > 0:
+                stats_text += f", Thinking Tokens: {reasoning_max_tokens}"
             if pdf_engine != "auto":
                  stats_text += f", PDF Engine: {pdf_engine}"
 
@@ -668,8 +637,7 @@ class OpenRouterNode:
     @classmethod
     def IS_CHANGED(cls, api_key, system_prompt, user_message_box, model,
                    web_search, cheapest, fastest, temperature, pdf_engine, chat_mode,
-                   max_tokens=0, timeout=60, reasoning_preset="custom",
-                   reasoning_effort="default",
+                   max_tokens=0, timeout=60, reasoning_effort="default",
                    reasoning_max_tokens=0,
                    image_generation=False, pdf_data=None, user_message_input=None, **kwargs):
         """
@@ -725,7 +693,7 @@ class OpenRouterNode:
         # Use primitive types where possible for reliable hashing/comparison
         return (api_key, system_prompt, user_message_box, model,
                 web_search, cheapest, fastest, temp_float, pdf_engine, chat_mode,
-                max_tokens, timeout, reasoning_preset, reasoning_effort, reasoning_max_tokens,
+                max_tokens, timeout, reasoning_effort, reasoning_max_tokens,
                 image_generation, tuple(image_hashes), pdf_hash, user_message_input)
 
 # Node class mappings
