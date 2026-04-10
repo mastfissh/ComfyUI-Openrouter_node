@@ -112,27 +112,46 @@ class OpenRouterNode:
     def fetch_openrouter_models(cls):
         """
         Fetches a list of model IDs from the OpenRouter API, caching them.
+        Retries once on network failure before falling back.
         """
         current_time = time.time()
         if (cls.models_cache is None) or (current_time - cls.last_fetch_time > cls.cache_duration):
             url = "https://openrouter.ai/api/v1/models"
-            try:
-                response = requests.get(url, timeout=10)
-                response.raise_for_status()
-                models = response.json()["data"]
-                # Filter for models that support chat completions if needed, but API handles this
-                model_list = sorted([model['id'] for model in models])
-                cls.models_cache = model_list
-                cls.last_fetch_time = current_time
-            except requests.exceptions.Timeout:
-                print("Error fetching models: Request timed out.")
+            last_error = None
+            for attempt in range(2):
+                try:
+                    response = requests.get(url, timeout=10)
+                    response.raise_for_status()
+                    models = response.json()["data"]
+                    # Filter for models that support chat completions if needed, but API handles this
+                    model_list = sorted([model['id'] for model in models])
+                    cls.models_cache = model_list
+                    cls.last_fetch_time = current_time
+                    last_error = None
+                    break
+                except requests.exceptions.Timeout as e:
+                    last_error = e
+                    if attempt == 0:
+                        print("Fetching models timed out, retrying...")
+                        continue
+                except requests.exceptions.ConnectionError as e:
+                    last_error = e
+                    if attempt == 0:
+                        print("Fetching models connection error, retrying...")
+                        continue
+                except requests.exceptions.RequestException as e:
+                    # Retry on 5xx server errors, but not on 4xx client errors
+                    if hasattr(e, 'response') and e.response is not None and e.response.status_code >= 500:
+                        last_error = e
+                        if attempt == 0:
+                            print(f"Fetching models server error ({e.response.status_code}), retrying...")
+                            continue
+                    last_error = e
+                    break
+            if last_error is not None:
+                print(f"Error fetching models: {last_error}")
                 if cls.models_cache is None:
                     cls.models_cache = ["error_fetching_models", "google/gemma-3-27b-it", "openai/gpt-4o"]
-            except requests.exceptions.RequestException as e:
-                print(f"Error fetching models: {e}")
-                # Provide a default list or indicate error if cache is empty
-                if cls.models_cache is None:
-                    cls.models_cache = ["error_fetching_models", "google/gemma-3-27b-it", "openai/gpt-4o"] # Example fallbacks
         return cls.models_cache if cls.models_cache else ["error_fetching_models"] # Ensure it's never empty
 
     def validate_temperature(self, temperature):
@@ -161,32 +180,50 @@ class OpenRouterNode:
             "X-Title": "ComfyUI OpenRouter LLM Node",
         }
 
-        try:
-            response = requests.get(url, headers=headers, timeout=10)
-            response.raise_for_status()
+        last_error = None
+        for attempt in range(2):
+            try:
+                response = requests.get(url, headers=headers, timeout=10)
+                response.raise_for_status()
 
-            result = response.json()
-            # Check if 'data' and expected keys exist
-            if "data" in result and "total_credits" in result["data"] and "total_usage" in result["data"]:
-                total_credits = result["data"]["total_credits"]
-                total_usage = result["data"]["total_usage"]
-                remaining = total_credits - total_usage
-                credits_text = f"Remaining: ${remaining:.3f}"
-            else:
-                credits_text = "Could not parse credit data from response."
+                result = response.json()
+                # Check if 'data' and expected keys exist
+                if "data" in result and "total_credits" in result["data"] and "total_usage" in result["data"]:
+                    total_credits = result["data"]["total_credits"]
+                    total_usage = result["data"]["total_usage"]
+                    remaining = total_credits - total_usage
+                    credits_text = f"Remaining: ${remaining:.3f}"
+                else:
+                    credits_text = "Could not parse credit data from response."
 
-            return credits_text
+                return credits_text
 
-        except requests.exceptions.Timeout:
-            return "Error fetching credits: Request timed out."
-        except requests.exceptions.RequestException as e:
-            # Provide more context about the error
-            error_message = f"Error fetching credits: {str(e)}"
-            if hasattr(e, 'response') and e.response is not None:
-                 error_message += f" | Status Code: {e.response.status_code} | Response: {e.response.text[:200]}" # Log part of response
-            return error_message
-        except json.JSONDecodeError:
-             return "Error fetching credits: Could not decode JSON response."
+            except requests.exceptions.Timeout as e:
+                last_error = e
+                if attempt == 0:
+                    print("Fetching credits timed out, retrying...")
+                    continue
+            except requests.exceptions.ConnectionError as e:
+                last_error = e
+                if attempt == 0:
+                    print("Fetching credits connection error, retrying...")
+                    continue
+            except requests.exceptions.RequestException as e:
+                # Retry on 5xx server errors, but not on 4xx client errors
+                if hasattr(e, 'response') and e.response is not None and e.response.status_code >= 500:
+                    last_error = e
+                    if attempt == 0:
+                        print(f"Fetching credits server error ({e.response.status_code}), retrying...")
+                        continue
+                error_message = f"Error fetching credits: {str(e)}"
+                if hasattr(e, 'response') and e.response is not None:
+                     error_message += f" | Status Code: {e.response.status_code} | Response: {e.response.text[:200]}"
+                return error_message
+            except json.JSONDecodeError:
+                 return "Error fetching credits: Could not decode JSON response."
+
+        # All retries exhausted
+        return f"Error fetching credits: {str(last_error)}"
 
     def generate_response(self, api_key, system_prompt, user_message_box, model,
                          web_search, cheapest, fastest, temperature, pdf_engine, chat_mode,
@@ -392,141 +429,159 @@ class OpenRouterNode:
             print(f"Warning: Token counting failed - {e}")
 
 
-        # --- Make API Call and Process Response ---
-        try:
-            start_time = time.time()
-            response = requests.post(url, headers=headers, json=data, timeout=timeout)
-            response.raise_for_status() # Raises HTTPError for bad responses (4xx or 5xx)
-            end_time = time.time()
+        # --- Make API Call and Process Response (with one retry on network failure) ---
+        last_network_error = None
+        for attempt in range(2):
+            try:
+                start_time = time.time()
+                response = requests.post(url, headers=headers, json=data, timeout=timeout)
+                response.raise_for_status() # Raises HTTPError for bad responses (4xx or 5xx)
+                end_time = time.time()
 
-            result = response.json()
+                result = response.json()
 
-            # --- Extract results and calculate stats ---
-            if not result.get("choices") or not result["choices"][0].get("message"):
-                 raise ValueError("Invalid response format from API: 'choices' or 'message' missing.")
+                # --- Extract results and calculate stats ---
+                if not result.get("choices") or not result["choices"][0].get("message"):
+                     raise ValueError("Invalid response format from API: 'choices' or 'message' missing.")
 
-            # Parse response for text and image content
-            message = result["choices"][0]["message"]
-            text_output = message.get("content", "")
-            image_tensor = placeholder_image
+                # Parse response for text and image content
+                message = result["choices"][0]["message"]
+                text_output = message.get("content", "")
+                image_tensor = placeholder_image
 
-            # Check for images in the separate images field (OpenRouter format)
-            if message.get("images"):
-                print(f"Found {len(message['images'])} image(s) in API response")
-                try:
-                    # Get the first image from the images array
-                    first_image = message["images"][0]
-                    image_url = first_image["image_url"]["url"]
-                    
-                    if image_url.startswith("data:image"):
-                        base64_str = image_url.split(",", 1)[1]
-                        try:
-                            # Convert base64 to image tensor
-                            image_tensor = self.base64_to_image(base64_str)
-                            print(f"Successfully decoded image from API response")
-                        except Exception as e:
-                            print(f"Error decoding image: {e}")
-                    else:
-                        print(f"Image URL format not supported: {image_url[:50]}...")
-                except Exception as e:
-                    print(f"Error processing images from response: {e}")
-            else:
-                print("No images found in API response - this may be normal if the model doesn't support image generation or the prompt didn't request an image")
-            
-            # Also handle legacy multimodal content format as fallback
-            if isinstance(text_output, list):
-                text_parts = []
-                for content in text_output:
-                    if isinstance(content, dict):
-                        if content.get("type") == "text":
-                            text_parts.append(content.get("text", ""))
-                        elif content.get("type") == "image_url":
-                            # Extract base64 image data
-                            image_url = content["image_url"]["url"]
-                            if image_url.startswith("data:image"):
-                                base64_str = image_url.split(",", 1)[1]
-                                try:
-                                    # Convert base64 to image tensor
-                                    image_tensor = self.base64_to_image(base64_str)
-                                except Exception as e:
-                                    print(f"Error decoding image: {e}")
-                text_output = "\n".join(text_parts)
-
-            response_ms = result.get("response_ms", None)
-            api_usage = result.get("usage", {})
-            prompt_tokens = api_usage.get("prompt_tokens", text_token_estimate) # Use API value if available
-            completion_tokens = api_usage.get("completion_tokens", 0)
-            if completion_tokens == 0 and text_output: # Estimate completion tokens if API doesn't provide them
-                 try:
-                     completion_tokens = self.count_tokens(text_output, model)
-                 except Exception as e:
-                     print(f"Warning: Completion token counting failed - {e}")
-
-
-            # Calculate tokens per second (TPS)
-            tps = 0
-            elapsed_time = end_time - start_time
-            if response_ms is not None:
-                server_elapsed_time = response_ms / 1000.0
-                if server_elapsed_time > 0:
-                    tps = completion_tokens / server_elapsed_time
-            elif elapsed_time > 0:
-                # Use client-side timing as fallback, less accurate due to network latency
-                 tps = completion_tokens / elapsed_time
-                 # Optional: apply a heuristic correction factor if needed, but server time is better
-                 # correction_factor = 1.28 # Example factor, might need tuning
-                 # tps *= correction_factor
-
-            stats_text = (
-                f"TPS: {tps:.2f}, "
-                f"Prompt Tokens: {prompt_tokens}, "
-                f"Completion Tokens: {completion_tokens}, "
-                f"Temp: {validated_temp:.1f}, "
-                f"Model: {modified_model}" # Display the actual model used
-            )
-            if max_tokens > 0:
-                stats_text += f", Max Tokens: {max_tokens}"
-            if reasoning_effort != "default":
-                stats_text += f", Reasoning: {reasoning_effort}"
-            if reasoning_max_tokens > 0:
-                stats_text += f", Thinking Tokens: {reasoning_max_tokens}"
-            if pdf_engine != "auto":
-                 stats_text += f", PDF Engine: {pdf_engine}"
-
-
-            # Fetch credits information AFTER the main request
-            credits_text = self.fetch_credits(api_key)
-
-            # Save conversation in chat mode
-            if chat_mode and session_path:
-                # Append assistant's response to the conversation
-                assistant_message = {
-                    "role": "assistant",
-                    "content": text_output
-                }
-                messages.append(assistant_message)
+                # Check for images in the separate images field (OpenRouter format)
+                if message.get("images"):
+                    print(f"Found {len(message['images'])} image(s) in API response")
+                    try:
+                        # Get the first image from the images array
+                        first_image = message["images"][0]
+                        image_url = first_image["image_url"]["url"]
+                        
+                        if image_url.startswith("data:image"):
+                            base64_str = image_url.split(",", 1)[1]
+                            try:
+                                # Convert base64 to image tensor
+                                image_tensor = self.base64_to_image(base64_str)
+                                print(f"Successfully decoded image from API response")
+                            except Exception as e:
+                                print(f"Error decoding image: {e}")
+                        else:
+                            print(f"Image URL format not supported: {image_url[:50]}...")
+                    except Exception as e:
+                        print(f"Error processing images from response: {e}")
+                else:
+                    print("No images found in API response - this may be normal if the model doesn't support image generation or the prompt didn't request an image")
                 
-                # Save the updated conversation
-                self.chat_manager.save_conversation(session_path, messages)
+                # Also handle legacy multimodal content format as fallback
+                if isinstance(text_output, list):
+                    text_parts = []
+                    for content in text_output:
+                        if isinstance(content, dict):
+                            if content.get("type") == "text":
+                                text_parts.append(content.get("text", ""))
+                            elif content.get("type") == "image_url":
+                                # Extract base64 image data
+                                image_url = content["image_url"]["url"]
+                                if image_url.startswith("data:image"):
+                                    base64_str = image_url.split(",", 1)[1]
+                                    try:
+                                        # Convert base64 to image tensor
+                                        image_tensor = self.base64_to_image(base64_str)
+                                    except Exception as e:
+                                        print(f"Error decoding image: {e}")
+                    text_output = "\n".join(text_parts)
 
-            return (text_output, image_tensor, stats_text, credits_text)
+                response_ms = result.get("response_ms", None)
+                api_usage = result.get("usage", {})
+                prompt_tokens = api_usage.get("prompt_tokens", text_token_estimate) # Use API value if available
+                completion_tokens = api_usage.get("completion_tokens", 0)
+                if completion_tokens == 0 and text_output: # Estimate completion tokens if API doesn't provide them
+                     try:
+                         completion_tokens = self.count_tokens(text_output, model)
+                     except Exception as e:
+                         print(f"Warning: Completion token counting failed - {e}")
 
-        except requests.exceptions.Timeout:
-            return (f"API Request Error: Request timed out after {timeout} seconds.", placeholder_image, "Stats N/A due to error", "Credits N/A due to error")
-        except requests.exceptions.RequestException as e:
-            error_message = f"API Request Error: {str(e)}"
-            if hasattr(e, 'response') and e.response is not None:
-                try:
-                    error_detail = e.response.json() # Try to get JSON error detail
-                    error_message += f" | Details: {error_detail}"
-                except json.JSONDecodeError:
-                    error_message += f" | Status: {e.response.status_code} | Response: {e.response.text[:200]}" # Show raw text if not JSON
-            else:
-                 error_message += " (Network or connection issue)" # Generic network error
 
-            return (error_message, placeholder_image, "Stats N/A due to error", "Credits N/A due to error")
-        except Exception as e: # Catch other potential errors (e.g., JSON parsing, value errors)
-             return (f"Node Error: {str(e)}", placeholder_image, "Stats N/A due to error", "Credits N/A due to error")
+                # Calculate tokens per second (TPS)
+                tps = 0
+                elapsed_time = end_time - start_time
+                if response_ms is not None:
+                    server_elapsed_time = response_ms / 1000.0
+                    if server_elapsed_time > 0:
+                        tps = completion_tokens / server_elapsed_time
+                elif elapsed_time > 0:
+                    # Use client-side timing as fallback, less accurate due to network latency
+                     tps = completion_tokens / elapsed_time
+
+                stats_text = (
+                    f"TPS: {tps:.2f}, "
+                    f"Prompt Tokens: {prompt_tokens}, "
+                    f"Completion Tokens: {completion_tokens}, "
+                    f"Temp: {validated_temp:.1f}, "
+                    f"Model: {modified_model}" # Display the actual model used
+                )
+                if max_tokens > 0:
+                    stats_text += f", Max Tokens: {max_tokens}"
+                if reasoning_effort != "default":
+                    stats_text += f", Reasoning: {reasoning_effort}"
+                if reasoning_max_tokens > 0:
+                    stats_text += f", Thinking Tokens: {reasoning_max_tokens}"
+                if pdf_engine != "auto":
+                     stats_text += f", PDF Engine: {pdf_engine}"
+
+
+                # Fetch credits information AFTER the main request
+                credits_text = self.fetch_credits(api_key)
+
+                # Save conversation in chat mode
+                if chat_mode and session_path:
+                    # Append assistant's response to the conversation
+                    assistant_message = {
+                        "role": "assistant",
+                        "content": text_output
+                    }
+                    messages.append(assistant_message)
+                    
+                    # Save the updated conversation
+                    self.chat_manager.save_conversation(session_path, messages)
+
+                return (text_output, image_tensor, stats_text, credits_text)
+
+            except requests.exceptions.Timeout as e:
+                last_network_error = e
+                if attempt == 0:
+                    print(f"API request timed out, retrying...")
+                    continue
+            except requests.exceptions.ConnectionError as e:
+                last_network_error = e
+                if attempt == 0:
+                    print(f"API connection error, retrying...")
+                    continue
+            except requests.exceptions.RequestException as e:
+                # Retry on 5xx server errors, but not on 4xx client errors
+                if hasattr(e, 'response') and e.response is not None and e.response.status_code >= 500:
+                    last_network_error = e
+                    if attempt == 0:
+                        print(f"API server error ({e.response.status_code}), retrying...")
+                        continue
+                error_message = f"API Request Error: {str(e)}"
+                if hasattr(e, 'response') and e.response is not None:
+                    try:
+                        error_detail = e.response.json()
+                        error_message += f" | Details: {error_detail}"
+                    except json.JSONDecodeError:
+                        error_message += f" | Status: {e.response.status_code} | Response: {e.response.text[:200]}"
+                else:
+                     error_message += " (Network or connection issue)"
+                return (error_message, placeholder_image, "Stats N/A due to error", "Credits N/A due to error")
+            except Exception as e:
+                 return (f"Node Error: {str(e)}", placeholder_image, "Stats N/A due to error", "Credits N/A due to error")
+
+        # All retries exhausted — return the last network error
+        if isinstance(last_network_error, requests.exceptions.Timeout):
+            return (f"API Request Error: Request timed out after {timeout} seconds (retried once).", placeholder_image, "Stats N/A due to error", "Credits N/A due to error")
+        else:
+            return (f"API Request Error: {str(last_network_error)} (retried once)", placeholder_image, "Stats N/A due to error", "Credits N/A due to error")
 
     @staticmethod
     def image_to_base64(image):
