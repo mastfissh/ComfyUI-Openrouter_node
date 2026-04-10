@@ -392,7 +392,7 @@ class OpenRouterNode:
         # When reasoning_max_tokens > 0 it takes priority over reasoning_effort.
         if reasoning_effort == "none":
             data["reasoning"] = {"enabled": False}
-        elif reasoning_max_tokens > 0:
+        elif int(reasoning_max_tokens) > 0:
             # max_tokens takes priority – do NOT also send effort
             data["reasoning"] = {"enabled": True, "max_tokens": int(reasoning_max_tokens)}
         elif reasoning_effort in ("minimal", "low", "medium", "high"):
@@ -524,7 +524,7 @@ class OpenRouterNode:
                     stats_text += f", Max Tokens: {max_tokens}"
                 if reasoning_effort != "default":
                     stats_text += f", Reasoning: {reasoning_effort}"
-                if reasoning_max_tokens > 0:
+                if int(reasoning_max_tokens) > 0:
                     stats_text += f", Thinking Tokens: {reasoning_max_tokens}"
                 if pdf_engine != "auto":
                      stats_text += f", PDF Engine: {pdf_engine}"
